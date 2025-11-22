@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Prévia - Remover Barba (prototipo)</title>
+  <style>
+    :root{
+      --bg:#0f1720;
+      --card:#0b1220;
+      --accent:#06b6d4;
+      --text:#e6eef6;
+    }
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;background:linear-gradient(180deg,#071023,var(--bg));color:var(--text)}
+    .wrap{max-width:980px;margin:28px auto;padding:18px;background:rgba(255,255,255,0.02);border-radius:12px;box-shadow:0 6px 30px rgba(0,0,0,0.6)}
+    header{display:flex;align-items:center;gap:12px}
+    h1{margin:0;font-size:18px}
+    p.lead{margin:6px 0 14px;color:rgba(230,238,246,0.78)}
+    .stage{display:grid;grid-template-columns:1fr 320px;gap:14px}
+    .video-card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:10px;border-radius:8px;display:flex;flex-direction:column;align-items:center}
+    canvas, video{max-width:100%;border-radius:8px;background:#000}
+    .controls{display:flex;flex-direction:column;gap:8px;padding:6px}
+    .row{display:flex;gap:8px;align-items:center}
+    button{background:var(--accent);color:#022;border:none;padding:8px 12px;border-radius:8px;cursor:pointer}
+    button.ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--text)}
+    label{font-size:13px;color:rgba(230,238,246,0.9)}
+    input[type=range]{width:100%}
+    small{color:rgba(230,238,246,0.6)}
+    .footer{font-size:12px;color:rgba(230,238,246,0.6);margin-top:8px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Prévia: Remover Barba — Protótipo</h1>
+    </header>
+    <p class="lead">Abra a câmera, ajuste a intensidade e veja uma simulação de como ficaria sem barba. Funciona em tempo real no navegador (prototipo).</p>
+
+    <div class="stage">
+      <div class="video-card">
+        <div style="position:relative; width:100%; max-width:640px;">
+          <video id="video" autoplay playsinline style="display:none;"></video>
+          <canvas id="out" width="640" height="480"></canvas>
+        </div>
+        <div class="footer">
+          <small>Rodando localmente: permissões de câmera necessárias. Em domínio público use HTTPS.</small>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="row">
+          <button id="startBtn">Abrir câmera</button>
+          <button id="stopBtn" class="ghost" disabled>Parar</button>
+        </div>
+
+        <div>
+          <label>Intensidade (quanto o efeito "apaga" a barba)</label>
+          <input id="intensity" type="range" min="0" max="1" step="0.05" value="0.8">
+        </div>
+
+        <div>
+          <label>Tamanho do "pincel" da máscara</label>
+          <input id="brush" type="range" min="4" max="60" step="1" value="18">
+        </div>
+
+        <div class="row">
+          <button id="capture">Tirar foto</button>
+          <a id="downloadLink" style="display:none;" class="ghost">Download</a>
+        </div>
+
+        <div>
+          <label><input type="checkbox" id="showLandmarks"> Mostrar pontos (debug)</label>
+        </div>
+
+        <div style="margin-top:6px">
+          <small>Observações: isto é um protótipo. Para resultados profissionais, use modelos de inpainting treinados para remoção de pelos.</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dependências (TensorFlow.js + Face Landmarks Detection / MediaPipe Facemesh) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.6.0/dist/tf-core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.6.0/dist/tf-backend-webgl.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@1.0.3/dist/face-landmarks-detection.min.js"></script>
+
+  <script>
+  (async ()=> {
+    const video = document.getElementById('video');
+    const out = document.getElementById('out');
+    const ctx = out.getContext('2d');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const intensityEl = document.getElementById('intensity');
+    const brushEl = document.getElementById('brush');
+    const captureBtn = document.getElementById('capture');
+    const downloadLink = document.getElementById('downloadLink');
+    const showLandmarks = document.getElementById('showLandmarks');
+
+    let model = null;
+    let running = false;
+    let stream = null;
+
+    async function loadModel(){
+      model = await faceLandmarksDetection.load(
+        faceLandmarksDetection.SupportedPackages.mediapipeFacemesh,
+        {maxFaces:1}
+      );
+      console.log('Modelo carregado');
+    }
+    await loadModel();
+
+    async function startCamera(){
+      if (running) return;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}, audio:false});
+        video.srcObject = stream;
+        await video.play();
+        out.width = video.videoWidth || 640;
+        out.height = video.videoHeight || 480;
+        running = true;
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        loop();
+      } catch(err){
+        alert('Erro ao abrir câmera: ' + err.message);
+        console.error(err);
+      }
+    }
+
+    function stopCamera(){
+      if (!running) return;
+      running = false;
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      if (stream){
+        stream.getTracks().forEach(t=>t.stop());
+        stream = null;
+      }
+      ctx.clearRect(0,0,out.width,out.height);
+    }
+
+    async function loop(){
+      if(!running) return;
+      const predictions = await model.estimateFaces({input:video, flipHorizontal:true});
+      ctx.save();
+      ctx.clearRect(0,0,out.width,out.height);
+      ctx.drawImage(video, 0, 0, out.width, out.height);
+
+      if (predictions && predictions.length>0){
+        const p = predictions[0];
+        const points = p.scaledMesh;
+        const lipIndices = [13,14, 0, 17, 61, 291];
+        let mouthY = 0, cnt=0;
+        for (let i of lipIndices){
+          if (points[i]){
+            mouthY += points[i][1];
+            cnt++;
+          }
+        }
+        mouthY = cnt? mouthY / cnt : (out.height * 0.55);
+
+        const maskCanvas = document.createElement('canvas');
+        maskCanvas.width = out.width; maskCanvas.height = out.height;
+        const mctx = maskCanvas.getContext('2d');
+        mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height);
+        mctx.fillStyle = 'white';
+
+        const faceSize = Math.hypot(points[10][0]-points[152][0] || 1, points[10][1]-points[152][1] || 1);
+        const brushBase = parseFloat(brushEl.value) || 18;
+
+        for (let i=0;i<points.length;i++){
+          const pt = points[i];
+          if (!pt) continue;
+          const x = pt[0], y = pt[1];
+          if (y > mouthY - (faceSize*0.02)) {
+            const r = brushBase * (1 + ( (y - mouthY) / out.height )*2 );
+            mctx.beginPath();
+            mctx.arc(x, y, r, 0, Math.PI*2);
+            mctx.fill();
+          }
+        }
+
+        mctx.globalCompositeOperation = 'source-in';
+        mctx.filter = 'blur(12px)';
+        const temp = document.createElement('canvas');
+        temp.width = maskCanvas.width; temp.height = maskCanvas.height;
+        const tctx = temp.getContext('2d');
+        tctx.drawImage(maskCanvas,0,0);
+
+        const smoothCopy = document.createElement('canvas');
+        smoothCopy.width = out.width; smoothCopy.height = out.height;
+        const sc = smoothCopy.getContext('2d');
+        sc.filter = `blur(${Math.max(2,10*(parseFloat(intensityEl.value)||0.8))}px) saturate(${1 - 0.2*(parseFloat(intensityEl.value)||0.8)})`;
+        sc.drawImage(video,0,0,out.width,out.height);
+
+        const maskedSmooth = document.createElement('canvas');
+        maskedSmooth.width = out.width; maskedSmooth.height = out.height;
+        const msc = maskedSmooth.getContext('2d');
+        msc.drawImage(smoothCopy,0,0);
+        msc.globalCompositeOperation = 'destination-in';
+        msc.drawImage(temp,0,0);
+        ctx.globalAlpha = parseFloat(intensityEl.value) || 0.8;
+        ctx.drawImage(maskedSmooth,0,0);
+        ctx.globalAlpha = 1.0;
+
+        if (showLandmarks.checked){
+          ctx.save();
+          ctx.fillStyle = 'lime';
+          for (let i=0;i<points.length;i+=4){
+            const pt = points[i];
+            if (!pt) continue;
+            ctx.beginPath();
+            ctx.arc(pt[0], pt[1], 1.5, 0, Math.PI*2);
+            ctx.fill();
+          }
+          ctx.restore();
+        }
+
+      }
+
+      ctx.restore();
+      requestAnimationFrame(loop);
+    }
+
+    startBtn.addEventListener('click', startCamera);
+    stopBtn.addEventListener('click', stopCamera);
+
+    captureBtn.addEventListener('click', ()=>{
+      const data = out.toDataURL('image/png');
+      downloadLink.href = data;
+      downloadLink.download = 'preview_sem_barba.png';
+      downloadLink.style.display = 'inline-block';
+      downloadLink.textContent = 'Baixar PNG';
+    });
+
+  })();
+  </script>
+</body>
+</html>
